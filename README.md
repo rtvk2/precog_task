@@ -593,7 +593,7 @@ precog/
 │   └── MNIST/
 │       └── raw/              # MNIST dataset files (auto-downloaded)
 ├── images/                   # Output images (if saved)
-└── images2/                  # Additional output images (if saved)
+
 ```
 
 The other `precog_fin_*.ipynb` files are earlier iterations/experiments. **`precog_comp.ipynb` is the final, comprehensive submission.**
