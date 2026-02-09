@@ -594,7 +594,6 @@ precog/
 │       └── raw/              # MNIST dataset files (auto-downloaded)
 ├── images/                   # Output images (if saved)
 
-```
 
 The other `precog_fin_*.ipynb` files are earlier iterations/experiments. **`precog_comp.ipynb` is the final, comprehensive submission.**
 
@@ -632,6 +631,61 @@ The SAE has reconstruction error — replacing activations with `SAE.decode(modi
 ### Why Adam-PGD with CE+CW blend instead of standard PGD?
 
 Standard PGD with sign-based updates is noisy for targeted attacks with tight ε budgets. Adam provides adaptive per-parameter learning rates. The CE→CW loss blend provides strong gradient signal far from the boundary (CE) while refining precisely near it (CW margin). Multiple random restarts escape local minima.
+
+---
+
+## Evolution & Rejected Approaches
+
+This project went through multiple iterations (`precog_fin.ipynb` → `precog_fin_33` → `precog_fin_55` → `precog_fin_f5` → `precog_fin_f6` → `precog_comp.ipynb`). Below are the key approaches that were tried and abandoned, and why.
+
+### Dataset: Flat Foreground Coloring → Textured Backgrounds
+
+**Earlier approach (`precog_fin.ipynb`):** The colored digit was created by multiplying the grayscale image directly by the color vector: `img * torch.tensor(color).view(3, 1, 1)`. This colored the **digit stroke** itself (foreground), leaving the background black.
+
+**Why it was abandoned:** A flat-colored foreground on a black background is trivially separable — the model can detect digit shape just from the brightness pattern, and color from any single non-zero pixel. This makes the spurious correlation too easy to break and doesn't mirror real-world bias (e.g., textured snow behind wolves). The final textured-background approach distributes color spatially across the entire image, creating a more realistic and challenging bias.
+
+### Model: ResNet-18 / LazyNet / ColorBiasedNet → NanoNet
+
+**Earlier approaches:**
+- **ResNet-18** (`precog_fin.ipynb`, commented out): Modified with `conv1=1×1` and `maxpool=Identity` to fit 28×28 inputs. Too large (11M params) — overparameterized for MNIST, slow to train, and the 512-dim penultimate layer is too large for meaningful SAE decomposition in Task 6.
+- **LazyNet** (`precog_fin.ipynb`, commented out): Used **1×1 convolutions** (3→32→64→64) + MaxPool + global avg pool. Designed to be color-only, but the extreme architectural constraint (no spatial receptive field at all) made it unrealistic — real models don't have this limitation, they *choose* to ignore shape.
+- **ColorBiasedNet** (`precog_fin_33.ipynb`): Similar 1×1 conv architecture (3→16→32) with MaxPool(4,4). Same problem as LazyNet — interesting as an extreme demo but proves nothing about real spurious correlations since the model *can't* learn shapes even if it wanted to.
+
+**Why NanoNet won:** It uses standard **3×3 convolutions** (can learn both shape and color), achieves 97% on regular MNIST (proving sufficient capacity), yet still takes the color shortcut when trained on biased data. This makes the bias demonstration **realistic** — the model has the ability to learn shapes but *prefers* color. The 16-dim penultimate layer is also small enough for complete SAE analysis in Task 6.
+
+### Task 4: WeightedRandomSampler / Rebel Mixup / Mild Jitter → Strong ColorJitter + Channel Permutation
+
+**Failed Method 1 — WeightedRandomSampler:** The idea was to upweight the 5% counter-examples (images where digit color doesn't match the expected mapping) by 20×, forcing the model to see more conflicting color-digit pairs. **Why it failed:** The `ColoredMNIST` dataset is *stochastic* — it regenerates colors randomly on every `__getitem__` call. So the "rebel indices" identified at one point get different (mostly biased) colors when reloaded by the sampler. The 20× upweighting effectively did nothing.
+
+**Failed Method 2 — Rebel Mixup:** Every training image was blended 50/50 with a counter-example. **Why it failed:** The blended images were muddy and unnatural — averaging a Red 0 with a Green 0 creates a brownish blob that hurts shape learning rather than helping it. The mixed signal confused the model rather than teaching it to ignore color.
+
+**Failed Method 3 — Mild ColorJitter (hue=0.15):** Applied `ColorJitter(hue=0.15)` which rotates hue by ±54°. **Why it failed:** ±54° is only 30% of the color wheel. The model could still distinguish warm vs cool hues and maintain enough color discrimination to cheat. Accuracy plateaued at ~82%.
+
+**The final fix** uses `hue=0.5` (±180° = full color wheel, any color can become any other color) plus random channel permutation (all 6 RGB orderings). Together these make color a purely random, uninformative signal — forcing the model to rely on shape.
+
+### Task 5: Simple PGD → Adam-PGD with Multi-Restart
+
+**Earlier approach (`precog_fin_55.ipynb`):** A basic PGD attack with SGD optimizer, fixed α=0.01, 100 steps, single run, and a naive minimum-ε finder that linearly sweeps in 0.01 increments.
+
+**Why it was abandoned:** Simple sign-gradient PGD is noisy for targeted attacks with tight ε budgets (0.05). It frequently gets stuck in local minima and fails to find successful adversarial examples even when they exist. The final Adam-PGD uses adaptive learning rates, CE→CW loss blending (strong signal far from boundary, precision near it), cosine LR decay, and 20 random restarts to reliably find adversarial examples at minimal ε.
+
+### Task 3: Total Energy BG% → Density-Based BG%
+
+**Earlier approach (`precog_fin_55.ipynb`):** Measured background focus as `sum(heatmap × bg_mask) / sum(heatmap)` — total energy on background pixels divided by total energy everywhere.
+
+**Why it was abandoned:** Background has ~6× more pixels than the digit foreground (~85% vs ~15%). Even a perfectly uniform heatmap would show ~85% energy on background. This makes the metric misleading — a model focusing equally everywhere would appear "86% background focused." The final density-based metric (`mean(heatmap on bg) / (mean(bg) + mean(fg))`) normalizes for pixel count, making 50% the neutral threshold.
+
+### Evolution Timeline
+
+```
+precog_fin.ipynb      → Flat coloring, ResNet/LazyNet experiments, Tasks 1-3 only
+precog_fin_22.ipynb   → Switched to textured backgrounds
+precog_fin_33.ipynb   → Added ColorBiasedNet, full causal ablation proofs
+precog_fin_55.ipynb   → Added Task 4 (ColorJitter+ChannPerm), Task 5 (simple PGD)
+precog_fin_f5.ipynb   → Upgraded Task 5 to Adam-PGD, added Task 6 (SAE)
+precog_fin_f6.ipynb   → Added Task 2 (activation maximization / dreams)
+precog_comp.ipynb     → Final polished version with density-based metrics + all tasks
+```
 
 ---
 
